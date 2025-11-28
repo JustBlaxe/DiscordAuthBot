@@ -5,7 +5,7 @@ A Discord verification bot with anti-alt detection, VPN blocking, and device fin
 ## Features
 
 - OAuth2 Discord verification flow
-- VPN/Proxy detection via IPHub
+- VPN/Proxy detection via VpnApi
 - Device fingerprinting to prevent alts
 - IP duplicate detection
 - Account age requirements
