@@ -14,7 +14,7 @@ client.once("clientReady", async () => {
   client.user?.setActivity(config.status.text, { type: config.status.type });
 
   setClient(client);
-  initDatabase();
+  await initDatabase();
   startServer();
 
   const rest = new REST().setToken(config.discord.token);

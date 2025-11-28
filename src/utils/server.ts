@@ -16,6 +16,7 @@ import {
   cleanupExpiredSessions,
   isRateLimited,
   cleanupExpiredRateLimits,
+  healthCheck,
 } from "./database";
 import { logVerified, logBlocked, sendDMWarning } from "./discord";
 import { isValidIp } from "./validation";
@@ -28,6 +29,19 @@ const MAX_BODY_SIZE = 4096;
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 1000;
 const RATE_LIMIT_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const SESSION_DELETE_DELAY_MS = 1000;
+
+let sessionCleanupInterval: ReturnType<typeof setInterval> | null = null;
+let rateLimitCleanupInterval: ReturnType<typeof setInterval> | null = null;
+let server: ReturnType<typeof Bun.serve> | null = null;
+
+export const BlockReason = {
+  BLACKLISTED: "Blacklisted",
+  ACCOUNT_TOO_NEW: (age: number, min: number) => `Account too new (${age}d < ${min}d)`,
+  VPN_DETECTED: "VPN/Proxy detected",
+  COUNTRY_BLOCKED: (country: string) => `Country blocked (${country})`,
+  IP_ALREADY_VERIFIED: "IP already verified",
+  DEVICE_ALREADY_VERIFIED: "Device already verified",
+} as const;
 
 function validateInput(body: Record<string, unknown>): boolean {
   const { sid, csrf, fp, sr, tz, ua } = body;
@@ -59,7 +73,7 @@ function getClientIp(req: Request, socketAddr: { address: string } | null): stri
   return "unknown";
 }
 
-function checkRateLimit(ip: string, userId?: string): boolean {
+async function checkRateLimit(ip: string, userId?: string): Promise<boolean> {
   const key = userId ? `${ip}:${userId}` : ip;
   return isRateLimited(key, config.security.rateLimit.maxAttempts, config.security.rateLimit.windowMs);
 }
@@ -80,7 +94,12 @@ function safeCompare(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
   const bufB = Buffer.from(b);
   if (bufA.length !== bufB.length) {
-    timingSafeEqual(bufA, bufA);
+    const maxLen = Math.max(bufA.length, bufB.length);
+    const paddedA = Buffer.alloc(maxLen);
+    const paddedB = Buffer.alloc(maxLen);
+    bufA.copy(paddedA);
+    bufB.copy(paddedB);
+    timingSafeEqual(paddedA, paddedB);
     return false;
   }
   return timingSafeEqual(bufA, bufB);
@@ -133,10 +152,10 @@ const html = (sessionId: string, csrfToken: string, username: string, avatar: st
 const verifyJs = await Bun.file("public/verify.js").text();
 
 export function startServer() {
-  setInterval(cleanupExpiredSessions, SESSION_CLEANUP_INTERVAL_MS);
-  setInterval(cleanupExpiredRateLimits, RATE_LIMIT_CLEANUP_INTERVAL_MS);
+  sessionCleanupInterval = setInterval(cleanupExpiredSessions, SESSION_CLEANUP_INTERVAL_MS);
+  rateLimitCleanupInterval = setInterval(cleanupExpiredRateLimits, RATE_LIMIT_CLEANUP_INTERVAL_MS);
 
-  Bun.serve({
+  server = Bun.serve({
     port: config.server.port,
     async fetch(req, server) {
       const url = new URL(req.url);
@@ -166,8 +185,24 @@ export function startServer() {
         });
       }
 
+      if (url.pathname === "/health" && req.method === "GET") {
+        const db = await healthCheck();
+        const status = db.ok ? 200 : 503;
+        return Response.json(
+          {
+            status: db.ok ? "healthy" : "unhealthy",
+            timestamp: new Date().toISOString(),
+            uptime: process.uptime(),
+            checks: {
+              database: { ok: db.ok, latencyMs: db.latencyMs },
+            },
+          },
+          { status, headers: securityHeaders }
+        );
+      }
+
       if (url.pathname === "/callback" && req.method === "GET") {
-        if (checkRateLimit(ip)) {
+        if (await checkRateLimit(ip)) {
           return new Response("Too many requests", { status: 429, headers: securityHeaders });
         }
 
@@ -181,7 +216,7 @@ export function startServer() {
           const csrfToken = crypto.randomUUID();
           const avatar = getAvatarUrl(user.id, user.avatar);
 
-          createSession({
+          await createSession({
             id: sessionId,
             userId: user.id,
             username: user.username,
@@ -223,9 +258,9 @@ export function startServer() {
 
           const { sid, csrf, fp, sr, tz, hc, ua } = body;
 
-          const session = getSession(sid);
+          const session = await getSession(sid);
           if (!session || session.expires_at < Date.now()) {
-            if (session) deleteSession(sid);
+            if (session) await deleteSession(sid);
             return Response.json({ success: false, message: "Session expired" }, { headers: corsHeaders });
           }
 
@@ -233,12 +268,12 @@ export function startServer() {
             return Response.json({ success: false, message: "Invalid request" }, { headers: corsHeaders });
           }
 
-          if (!markSessionCompletedAtomic(sid)) {
+          if (!(await markSessionCompletedAtomic(sid))) {
             return Response.json({ success: false, message: "Already processed" }, { headers: corsHeaders });
           }
           setTimeout(() => deleteSession(sid), SESSION_DELETE_DELAY_MS);
 
-          if (checkRateLimit(session.ip_address, session.user_id)) {
+          if (await checkRateLimit(session.ip_address, session.user_id)) {
             return Response.json({ success: false, message: "Too many attempts" }, { headers: corsHeaders });
           }
 
@@ -249,10 +284,10 @@ export function startServer() {
           let vpnDetected = false;
           let vpnIsp = "";
 
-          const blacklist = isBlacklisted(session.user_id, session.ip_address);
+          const blacklist = await isBlacklisted(session.user_id, session.ip_address);
           if (blacklist.blocked) {
             blocked = true;
-            blockReason = blacklist.reason || "Blacklisted";
+            blockReason = blacklist.reason || BlockReason.BLACKLISTED;
           }
 
           if (!config.verification.pullbackOnly) {
@@ -260,7 +295,7 @@ export function startServer() {
               const age = getAccountAgeDays(session.user_id);
               if (age < config.security.minAccountAge) {
                 blocked = true;
-                blockReason = `Account too new (${age}d < ${config.security.minAccountAge}d)`;
+                blockReason = BlockReason.ACCOUNT_TOO_NEW(age, config.security.minAccountAge);
               }
             }
 
@@ -268,23 +303,23 @@ export function startServer() {
               const vpn = await checkVpn(session.ip_address);
               if (vpn.isVpn) {
                 blocked = true;
-                blockReason = "VPN/Proxy detected";
+                blockReason = BlockReason.VPN_DETECTED;
                 vpnDetected = true;
                 vpnIsp = vpn.isp;
               }
               if (!blocked && config.security.blockedCountries.length > 0) {
                 if (config.security.blockedCountries.includes(vpn.countryCode)) {
                   blocked = true;
-                  blockReason = `Country blocked (${vpn.country})`;
+                  blockReason = BlockReason.COUNTRY_BLOCKED(vpn.country);
                 }
               }
             }
 
             if (!blocked && config.verification.checkIpDuplicate) {
-              const existing = findUserByIp(session.ip_address);
+              const existing = await findUserByIp(session.ip_address);
               if (existing && existing.discord_id !== session.user_id) {
                 blocked = true;
-                blockReason = "IP already verified";
+                blockReason = BlockReason.IP_ALREADY_VERIFIED;
                 blockedBy = existing.discord_id;
                 const u = await getUserById(existing.discord_id);
                 if (u) blockedByUser = { username: u.username, avatar: getAvatarUrl(u.id, u.avatar) };
@@ -292,10 +327,10 @@ export function startServer() {
             }
 
             if (!blocked && config.verification.checkFingerprint) {
-              const existing = findUserByFingerprint(fp);
+              const existing = await findUserByFingerprint(fp);
               if (existing && existing.discord_id !== session.user_id) {
                 blocked = true;
-                blockReason = "Device already verified";
+                blockReason = BlockReason.DEVICE_ALREADY_VERIFIED;
                 blockedBy = existing.discord_id;
                 const u = await getUserById(existing.discord_id);
                 if (u) blockedByUser = { username: u.username, avatar: getAvatarUrl(u.id, u.avatar) };
@@ -303,7 +338,7 @@ export function startServer() {
             }
           }
 
-          logVerificationAttempt({
+          await logVerificationAttempt({
             discordId: session.user_id,
             discordUsername: session.username,
             ip: session.ip_address,
@@ -332,7 +367,7 @@ export function startServer() {
             });
 
             if (config.security.autoKick.enabled) {
-              const failures = getFailureCount(session.user_id);
+              const failures = await getFailureCount(session.user_id);
               const maxFailures = config.security.autoKick.maxFailures;
 
               if (failures < maxFailures) {
@@ -349,7 +384,7 @@ export function startServer() {
             return Response.json({ success: false, message: blockReason, blockedBy: blockedByUser }, { headers: corsHeaders });
           }
 
-          createOrUpdateUser({
+          await createOrUpdateUser({
             discordId: session.user_id,
             accessToken: session.access_token,
             refreshToken: session.refresh_token,
@@ -377,4 +412,31 @@ export function startServer() {
   });
 
   log.ok(`Server on port ${config.server.port}`);
+
+  const shutdown = () => {
+    log.info("Shutting down server...");
+    if (sessionCleanupInterval) clearInterval(sessionCleanupInterval);
+    if (rateLimitCleanupInterval) clearInterval(rateLimitCleanupInterval);
+    if (server) server.stop();
+    process.exit(0);
+  };
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}
+
+export function stopServer() {
+  if (sessionCleanupInterval) {
+    clearInterval(sessionCleanupInterval);
+    sessionCleanupInterval = null;
+  }
+  if (rateLimitCleanupInterval) {
+    clearInterval(rateLimitCleanupInterval);
+    rateLimitCleanupInterval = null;
+  }
+  if (server) {
+    server.stop();
+    server = null;
+  }
+  log.info("Server stopped");
 }

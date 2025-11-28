@@ -1,47 +1,51 @@
 # Dependencies
+
 node_modules/
 
 # Environment
+
 .env
 .env.local
-.env.*.local
-
-# Database
-*.db
-*.db-journal
-*.sqlite
-data/
+.env.\*.local
 
 # Logs
+
 logs/
-*.log
+\*.log
 
 # OS
+
 .DS_Store
 Thumbs.db
 
 # IDE
+
 .vscode/
 .idea/
-*.swp
-*.swo
+_.swp
+_.swo
 
 # Build
+
 dist/
 build/
-*.tsbuildinfo
+\*.tsbuildinfo
 
 # Git
+
 .git/
 .gitignore
 
 # Docker
+
 Dockerfile
 .dockerignore
 
 # Documentation
+
 README.md
 LICENSE
 
 # Bun
+
 bun.lockb

@@ -119,7 +119,7 @@ export async function handleCommand(interaction: ChatInputCommandInteraction) {
 
 async function handleCheck(interaction: ChatInputCommandInteraction) {
   const user = interaction.options.getUser("user", true);
-  const data = findUserById(user.id);
+  const data = await findUserById(user.id);
 
   if (!data) {
     await interaction.reply({ content: "User not found", flags: MessageFlags.Ephemeral });
@@ -141,8 +141,8 @@ async function handleCheck(interaction: ChatInputCommandInteraction) {
 }
 
 async function handleStats(interaction: ChatInputCommandInteraction) {
-  const stats = getStats();
-  const daily = getDailyStats(7);
+  const stats = await getStats();
+  const daily = await getDailyStats(7);
 
   const graphBuffer = createStatsGraph(daily);
   const attachment = new AttachmentBuilder(graphBuffer, { name: "stats.png" });
@@ -164,7 +164,7 @@ async function handleStats(interaction: ChatInputCommandInteraction) {
 async function handlePullback(interaction: ChatInputCommandInteraction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const users = getAllVerifiedUsers();
+  const users = await getAllVerifiedUsers();
   const guild = interaction.guild;
   if (!guild) {
     await interaction.editReply({ content: "Could not access server" });
@@ -212,7 +212,7 @@ async function handlePullback(interaction: ChatInputCommandInteraction) {
 }
 
 async function handleAudit(interaction: ChatInputCommandInteraction) {
-  const attempts = getRecentAttempts(15);
+  const attempts = await getRecentAttempts(15);
 
   if (attempts.length === 0) {
     await interaction.reply({ content: "No recent attempts", flags: MessageFlags.Ephemeral });
@@ -257,19 +257,19 @@ async function handleBlacklist(interaction: ChatInputCommandInteraction) {
       return;
     }
 
-    addToBlacklist(type, value, reason, interaction.user.id);
+    await addToBlacklist(type, value, reason, interaction.user.id);
     await interaction.reply({ content: `Added ${type} \`${value}\` to blacklist`, flags: MessageFlags.Ephemeral });
   } else if (sub === "remove") {
     const value = interaction.options.getString("value", true);
 
-    const removed = removeFromBlacklist(value);
+    const removed = await removeFromBlacklist(value);
     if (removed) {
       await interaction.reply({ content: `Removed \`${value}\` from blacklist`, flags: MessageFlags.Ephemeral });
     } else {
       await interaction.reply({ content: `\`${value}\` was not found in blacklist`, flags: MessageFlags.Ephemeral });
     }
   } else if (sub === "list") {
-    const list = getBlacklist();
+    const list = await getBlacklist();
 
     if (list.length === 0) {
       await interaction.reply({ content: "Blacklist is empty", flags: MessageFlags.Ephemeral });

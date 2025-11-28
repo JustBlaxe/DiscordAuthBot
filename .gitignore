@@ -31,4 +31,4 @@ build/
 *.tsbuildinfo
 
 # Bun
-bun.lockb
+bun.lock

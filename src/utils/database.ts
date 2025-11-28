@@ -1,15 +1,20 @@
-import { Database } from "bun:sqlite";
+import postgres from "postgres";
 import { config } from "../../config";
 import { log } from "./logger";
 import { encrypt, decrypt, isEncryptionConfigured } from "./crypto";
 
-export const db = new Database(config.database.path);
+export const sql = postgres(config.database.url, {
+  max: 10,
+  idle_timeout: 30,
+  connect_timeout: 10,
+  onnotice: () => { },
+});
 
 export interface User {
   discord_id: string;
   access_token: string;
   refresh_token: string;
-  verified: number;
+  verified: boolean;
   ip_address: string;
   fingerprint: string;
   user_agent: string;
@@ -18,26 +23,26 @@ export interface User {
   hardware_concurrency: number;
 }
 
-export function initDatabase() {
-  db.run(`
+export async function initDatabase() {
+  await sql`
     CREATE TABLE IF NOT EXISTS users (
       discord_id TEXT PRIMARY KEY,
       access_token TEXT,
       refresh_token TEXT,
-      verified INTEGER DEFAULT 0,
+      verified BOOLEAN DEFAULT FALSE,
       ip_address TEXT,
       fingerprint TEXT,
       user_agent TEXT,
       screen_resolution TEXT,
       timezone TEXT,
       hardware_concurrency INTEGER,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
-  `);
+  `;
 
-  db.run(`
+  await sql`
     CREATE TABLE IF NOT EXISTS verification_attempts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       discord_id TEXT,
       discord_username TEXT,
       ip_address TEXT,
@@ -46,27 +51,53 @@ export function initDatabase() {
       screen_resolution TEXT,
       timezone TEXT,
       hardware_concurrency INTEGER,
-      vpn_detected INTEGER DEFAULT 0,
+      vpn_detected BOOLEAN DEFAULT FALSE,
       vpn_isp TEXT,
-      blocked INTEGER DEFAULT 0,
+      blocked BOOLEAN DEFAULT FALSE,
       block_reason TEXT,
       blocked_by_discord_id TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
-  `);
+  `;
 
-  db.run(`
+  await sql`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'verified' AND data_type = 'integer'
+      ) THEN
+        ALTER TABLE users ALTER COLUMN verified TYPE BOOLEAN USING verified::int::boolean;
+      END IF;
+
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'verification_attempts' AND column_name = 'blocked' AND data_type = 'integer'
+      ) THEN
+        ALTER TABLE verification_attempts ALTER COLUMN blocked TYPE BOOLEAN USING blocked::int::boolean;
+      END IF;
+
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'verification_attempts' AND column_name = 'vpn_detected' AND data_type = 'integer'
+      ) THEN
+        ALTER TABLE verification_attempts ALTER COLUMN vpn_detected TYPE BOOLEAN USING vpn_detected::int::boolean;
+      END IF;
+    END $$;
+  `;
+
+  await sql`
     CREATE TABLE IF NOT EXISTS blacklist (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       type TEXT NOT NULL,
       value TEXT NOT NULL UNIQUE,
       reason TEXT,
       added_by TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
-  `);
+  `;
 
-  db.run(`
+  await sql`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -77,28 +108,40 @@ export function initDatabase() {
       csrf_token TEXT NOT NULL,
       ip_address TEXT NOT NULL,
       user_agent TEXT NOT NULL,
-      completed INTEGER DEFAULT 0,
-      expires_at INTEGER NOT NULL,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      completed BOOLEAN DEFAULT FALSE,
+      expires_at BIGINT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
-  `);
+  `;
 
-  db.run("DELETE FROM sessions WHERE expires_at < ?", [Date.now()]);
-  db.run("CREATE INDEX IF NOT EXISTS idx_users_ip ON users(ip_address)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_users_fingerprint ON users(fingerprint)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_attempts_discord_id ON verification_attempts(discord_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_attempts_created_at ON verification_attempts(created_at)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_blacklist_value ON blacklist(value)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)");
+  await sql`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'sessions' AND column_name = 'completed' AND data_type = 'integer'
+      ) THEN
+        ALTER TABLE sessions ALTER COLUMN completed TYPE BOOLEAN USING completed::int::boolean;
+      END IF;
+    END $$;
+  `;
 
-  db.run(`
+  await sql`DELETE FROM sessions WHERE expires_at < ${Date.now()}`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_users_ip ON users(ip_address)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_users_fingerprint ON users(fingerprint)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_attempts_discord_id ON verification_attempts(discord_id)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_attempts_created_at ON verification_attempts(created_at)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_blacklist_value ON blacklist(value)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)`;
+
+  await sql`
     CREATE TABLE IF NOT EXISTS rate_limits (
       key TEXT PRIMARY KEY,
       count INTEGER NOT NULL,
-      reset_at INTEGER NOT NULL
+      reset_at BIGINT NOT NULL
     )
-  `);
-  db.run("CREATE INDEX IF NOT EXISTS idx_rate_limits_reset ON rate_limits(reset_at)");
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS idx_rate_limits_reset ON rate_limits(reset_at)`;
 
   if (!isEncryptionConfigured()) {
     log.error("ENCRYPTION_KEY not configured - tokens will not be encrypted!");
@@ -117,11 +160,11 @@ export interface Session {
   csrf_token: string;
   ip_address: string;
   user_agent: string;
-  completed: number;
+  completed: boolean;
   expires_at: number;
 }
 
-export function createSession(data: {
+export async function createSession(data: {
   id: string;
   userId: string;
   username: string;
@@ -132,19 +175,18 @@ export function createSession(data: {
   ip: string;
   userAgent: string;
   expiresAt: number;
-}): void {
+}): Promise<void> {
   const encryptedAccess = isEncryptionConfigured() ? encrypt(data.accessToken) : data.accessToken;
   const encryptedRefresh = isEncryptionConfigured() ? encrypt(data.refreshToken) : data.refreshToken;
 
-  db.run(
-    `INSERT INTO sessions (id, user_id, username, avatar, access_token, refresh_token, csrf_token, ip_address, user_agent, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [data.id, data.userId, data.username, data.avatar, encryptedAccess, encryptedRefresh, data.csrfToken, data.ip, data.userAgent, data.expiresAt]
-  );
+  await sql`
+    INSERT INTO sessions (id, user_id, username, avatar, access_token, refresh_token, csrf_token, ip_address, user_agent, expires_at)
+    VALUES (${data.id}, ${data.userId}, ${data.username}, ${data.avatar}, ${encryptedAccess}, ${encryptedRefresh}, ${data.csrfToken}, ${data.ip}, ${data.userAgent}, ${data.expiresAt})
+  `;
 }
 
-export function getSession(id: string): Session | null {
-  const session = db.query<Session, [string]>("SELECT * FROM sessions WHERE id = ?").get(id);
+export async function getSession(id: string): Promise<Session | null> {
+  const [session] = await sql<Session[]>`SELECT * FROM sessions WHERE id = ${id}`;
   if (!session) return null;
 
   if (isEncryptionConfigured() && session.access_token.includes(":")) {
@@ -159,40 +201,42 @@ export function getSession(id: string): Session | null {
   return session;
 }
 
-export function markSessionCompleted(id: string): void {
-  db.run("UPDATE sessions SET completed = 1 WHERE id = ?", [id]);
+export async function markSessionCompleted(id: string): Promise<void> {
+  await sql`UPDATE sessions SET completed = TRUE WHERE id = ${id}`;
 }
 
-export function markSessionCompletedAtomic(id: string): boolean {
-  const result = db.run(
-    "UPDATE sessions SET completed = 1 WHERE id = ? AND completed = 0",
-    [id]
-  );
-  return result.changes > 0;
+export async function markSessionCompletedAtomic(id: string): Promise<boolean> {
+  const result = await sql`
+    UPDATE sessions SET completed = TRUE WHERE id = ${id} AND completed = FALSE
+  `;
+  return result.count > 0;
 }
 
-export function deleteSession(id: string): void {
-  db.run("DELETE FROM sessions WHERE id = ?", [id]);
+export async function deleteSession(id: string): Promise<void> {
+  await sql`DELETE FROM sessions WHERE id = ${id}`;
 }
 
-export function cleanupExpiredSessions(): void {
-  db.run("DELETE FROM sessions WHERE expires_at < ?", [Date.now()]);
+export async function cleanupExpiredSessions(): Promise<void> {
+  await sql`DELETE FROM sessions WHERE expires_at < ${Date.now()}`;
 }
 
-export function findUserByIp(ip: string): User | null {
-  return db.query<User, [string]>("SELECT * FROM users WHERE ip_address = ? AND verified = 1").get(ip);
+export async function findUserByIp(ip: string): Promise<User | null> {
+  const [user] = await sql<User[]>`SELECT * FROM users WHERE ip_address = ${ip} AND verified = TRUE`;
+  return user || null;
 }
 
-export function findUserByFingerprint(fingerprint: string): User | null {
-  return db.query<User, [string]>("SELECT * FROM users WHERE fingerprint = ? AND verified = 1").get(fingerprint);
+export async function findUserByFingerprint(fingerprint: string): Promise<User | null> {
+  const [user] = await sql<User[]>`SELECT * FROM users WHERE fingerprint = ${fingerprint} AND verified = TRUE`;
+  return user || null;
 }
 
-export function findUserById(discordId: string): User | null {
-  return db.query<User, [string]>("SELECT * FROM users WHERE discord_id = ?").get(discordId);
+export async function findUserById(discordId: string): Promise<User | null> {
+  const [user] = await sql<User[]>`SELECT * FROM users WHERE discord_id = ${discordId}`;
+  return user || null;
 }
 
-export function getAllVerifiedUsers(): User[] {
-  const users = db.query<User, []>("SELECT * FROM users WHERE verified = 1").all();
+export async function getAllVerifiedUsers(): Promise<User[]> {
+  const users = await sql<User[]>`SELECT * FROM users WHERE verified = TRUE`;
 
   if (isEncryptionConfigured()) {
     for (const user of users) {
@@ -210,7 +254,7 @@ export function getAllVerifiedUsers(): User[] {
   return users;
 }
 
-export function createOrUpdateUser(data: {
+export async function createOrUpdateUser(data: {
   discordId: string;
   accessToken: string;
   refreshToken: string;
@@ -224,34 +268,23 @@ export function createOrUpdateUser(data: {
   const encryptedAccess = isEncryptionConfigured() ? encrypt(data.accessToken) : data.accessToken;
   const encryptedRefresh = isEncryptionConfigured() ? encrypt(data.refreshToken) : data.refreshToken;
 
-  db.run(
-    `INSERT INTO users (discord_id, access_token, refresh_token, verified, ip_address, fingerprint, user_agent, screen_resolution, timezone, hardware_concurrency)
-     VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(discord_id) DO UPDATE SET
-       access_token = excluded.access_token,
-       refresh_token = excluded.refresh_token,
-       verified = 1,
-       ip_address = excluded.ip_address,
-       fingerprint = excluded.fingerprint,
-       user_agent = excluded.user_agent,
-       screen_resolution = excluded.screen_resolution,
-       timezone = excluded.timezone,
-       hardware_concurrency = excluded.hardware_concurrency`,
-    [
-      data.discordId,
-      encryptedAccess,
-      encryptedRefresh,
-      data.ip,
-      data.fingerprint,
-      data.userAgent,
-      data.screenResolution,
-      data.timezone,
-      data.hardwareConcurrency,
-    ]
-  );
+  await sql`
+    INSERT INTO users (discord_id, access_token, refresh_token, verified, ip_address, fingerprint, user_agent, screen_resolution, timezone, hardware_concurrency)
+    VALUES (${data.discordId}, ${encryptedAccess}, ${encryptedRefresh}, TRUE, ${data.ip}, ${data.fingerprint}, ${data.userAgent}, ${data.screenResolution}, ${data.timezone}, ${data.hardwareConcurrency})
+    ON CONFLICT(discord_id) DO UPDATE SET
+      access_token = EXCLUDED.access_token,
+      refresh_token = EXCLUDED.refresh_token,
+      verified = TRUE,
+      ip_address = EXCLUDED.ip_address,
+      fingerprint = EXCLUDED.fingerprint,
+      user_agent = EXCLUDED.user_agent,
+      screen_resolution = EXCLUDED.screen_resolution,
+      timezone = EXCLUDED.timezone,
+      hardware_concurrency = EXCLUDED.hardware_concurrency
+  `;
 }
 
-export function logVerificationAttempt(data: {
+export async function logVerificationAttempt(data: {
   discordId: string;
   discordUsername: string;
   ip: string;
@@ -266,54 +299,37 @@ export function logVerificationAttempt(data: {
   blockReason?: string;
   blockedByDiscordId?: string;
 }) {
-  db.run(
-    `INSERT INTO verification_attempts (discord_id, discord_username, ip_address, fingerprint, user_agent, screen_resolution, timezone, hardware_concurrency, vpn_detected, vpn_isp, blocked, block_reason, blocked_by_discord_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      data.discordId,
-      data.discordUsername,
-      data.ip,
-      data.fingerprint,
-      data.userAgent,
-      data.screenResolution,
-      data.timezone,
-      data.hardwareConcurrency,
-      data.vpnDetected ? 1 : 0,
-      data.vpnIsp ?? null,
-      data.blocked ? 1 : 0,
-      data.blockReason ?? null,
-      data.blockedByDiscordId ?? null,
-    ]
-  );
+  await sql`
+    INSERT INTO verification_attempts (discord_id, discord_username, ip_address, fingerprint, user_agent, screen_resolution, timezone, hardware_concurrency, vpn_detected, vpn_isp, blocked, block_reason, blocked_by_discord_id)
+    VALUES (${data.discordId}, ${data.discordUsername}, ${data.ip}, ${data.fingerprint}, ${data.userAgent}, ${data.screenResolution}, ${data.timezone}, ${data.hardwareConcurrency}, ${data.vpnDetected}, ${data.vpnIsp ?? null}, ${data.blocked}, ${data.blockReason ?? null}, ${data.blockedByDiscordId ?? null})
+  `;
 }
 
-export function getStats() {
-  const total = db.query<{ count: number }, []>("SELECT COUNT(*) as count FROM users WHERE verified = 1").get();
-  const attempts = db.query<{ count: number }, []>("SELECT COUNT(*) as count FROM verification_attempts").get();
-  const blocked = db.query<{ count: number }, []>("SELECT COUNT(*) as count FROM verification_attempts WHERE blocked = 1").get();
-  const vpn = db.query<{ count: number }, []>("SELECT COUNT(*) as count FROM verification_attempts WHERE vpn_detected = 1").get();
+export async function getStats() {
+  const [total] = await sql<[{ count: string }]>`SELECT COUNT(*) as count FROM users WHERE verified = TRUE`;
+  const [attempts] = await sql<[{ count: string }]>`SELECT COUNT(*) as count FROM verification_attempts`;
+  const [blocked] = await sql<[{ count: string }]>`SELECT COUNT(*) as count FROM verification_attempts WHERE blocked = TRUE`;
+  const [vpn] = await sql<[{ count: string }]>`SELECT COUNT(*) as count FROM verification_attempts WHERE vpn_detected = TRUE`;
 
   return {
-    verified: total?.count ?? 0,
-    attempts: attempts?.count ?? 0,
-    blocked: blocked?.count ?? 0,
-    vpn: vpn?.count ?? 0,
+    verified: parseInt(total?.count ?? "0"),
+    attempts: parseInt(attempts?.count ?? "0"),
+    blocked: parseInt(blocked?.count ?? "0"),
+    vpn: parseInt(vpn?.count ?? "0"),
   };
 }
 
-export function getDailyStats(days: number = 7) {
-  const result = db
-    .query<{ day: string; verified: number; blocked: number }, [number]>(
-      `SELECT
-        date(created_at) as day,
-        SUM(CASE WHEN blocked = 0 THEN 1 ELSE 0 END) as verified,
-        SUM(CASE WHEN blocked = 1 THEN 1 ELSE 0 END) as blocked
-      FROM verification_attempts
-      WHERE created_at >= date('now', '-' || ? || ' days')
-      GROUP BY date(created_at)
-      ORDER BY day ASC`
-    )
-    .all(days);
+export async function getDailyStats(days: number = 7) {
+  const result = await sql<{ day: string; verified: string; blocked: string }[]>`
+    SELECT
+      TO_CHAR(created_at, 'YYYY-MM-DD') as day,
+      SUM(CASE WHEN blocked = FALSE THEN 1 ELSE 0 END) as verified,
+      SUM(CASE WHEN blocked = TRUE THEN 1 ELSE 0 END) as blocked
+    FROM verification_attempts
+    WHERE created_at >= CURRENT_DATE - ${days}
+    GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD')
+    ORDER BY day ASC
+  `;
 
   const stats: { day: string; verified: number; blocked: number }[] = [];
   const today = new Date();
@@ -325,80 +341,98 @@ export function getDailyStats(days: number = 7) {
     const existing = result.find((r) => r.day === dayStr);
     stats.push({
       day: dayStr,
-      verified: existing?.verified ?? 0,
-      blocked: existing?.blocked ?? 0,
+      verified: parseInt(existing?.verified ?? "0"),
+      blocked: parseInt(existing?.blocked ?? "0"),
     });
   }
 
   return stats;
 }
 
-export function addToBlacklist(type: "user" | "ip", value: string, reason: string, addedBy: string) {
-  db.run("INSERT OR REPLACE INTO blacklist (type, value, reason, added_by) VALUES (?, ?, ?, ?)", [type, value, reason, addedBy]);
+export async function addToBlacklist(type: "user" | "ip", value: string, reason: string, addedBy: string) {
+  await sql`
+    INSERT INTO blacklist (type, value, reason, added_by)
+    VALUES (${type}, ${value}, ${reason}, ${addedBy})
+    ON CONFLICT(value) DO UPDATE SET
+      type = EXCLUDED.type,
+      reason = EXCLUDED.reason,
+      added_by = EXCLUDED.added_by
+  `;
 }
 
-export function removeFromBlacklist(value: string): boolean {
-  const exists = db.query<{ value: string }, [string]>("SELECT value FROM blacklist WHERE value = ?").get(value);
+export async function removeFromBlacklist(value: string): Promise<boolean> {
+  const [exists] = await sql<[{ value: string }?]>`SELECT value FROM blacklist WHERE value = ${value}`;
   if (!exists) return false;
-  db.run("DELETE FROM blacklist WHERE value = ?", [value]);
+  await sql`DELETE FROM blacklist WHERE value = ${value}`;
   return true;
 }
 
-export function isBlacklisted(discordId: string, ip: string): { blocked: boolean; reason?: string } {
-  const user = db.query<{ reason: string }, [string]>("SELECT reason FROM blacklist WHERE type = 'user' AND value = ?").get(discordId);
+export async function isBlacklisted(discordId: string, ip: string): Promise<{ blocked: boolean; reason?: string }> {
+  const [user] = await sql<[{ reason: string }?]>`SELECT reason FROM blacklist WHERE type = 'user' AND value = ${discordId}`;
   if (user) return { blocked: true, reason: user.reason };
 
-  const ipEntry = db.query<{ reason: string }, [string]>("SELECT reason FROM blacklist WHERE type = 'ip' AND value = ?").get(ip);
+  const [ipEntry] = await sql<[{ reason: string }?]>`SELECT reason FROM blacklist WHERE type = 'ip' AND value = ${ip}`;
   if (ipEntry) return { blocked: true, reason: ipEntry.reason };
 
   return { blocked: false };
 }
 
-export function getBlacklist() {
-  return db.query<{ type: string; value: string; reason: string; added_by: string; created_at: string }, []>(
-    "SELECT type, value, reason, added_by, created_at FROM blacklist ORDER BY created_at DESC"
-  ).all();
+export async function getBlacklist() {
+  return await sql<{ type: string; value: string; reason: string; added_by: string; created_at: string }[]>`
+    SELECT type, value, reason, added_by, created_at FROM blacklist ORDER BY created_at DESC
+  `;
 }
 
-export function getRecentAttempts(limit: number = 20) {
-  return db.query<{
+export async function getRecentAttempts(limit: number = 20) {
+  return await sql<{
     discord_id: string;
     discord_username: string;
     ip_address: string;
     blocked: number;
     block_reason: string | null;
     created_at: string;
-  }, [number]>(
-    "SELECT discord_id, discord_username, ip_address, blocked, block_reason, created_at FROM verification_attempts ORDER BY created_at DESC LIMIT ?"
-  ).all(limit);
+  }[]>`
+    SELECT discord_id, discord_username, ip_address, blocked, block_reason, created_at FROM verification_attempts ORDER BY created_at DESC LIMIT ${limit}
+  `;
 }
 
-export function getFailureCount(discordId: string): number {
-  const result = db.query<{ count: number }, [string]>(
-    "SELECT COUNT(*) as count FROM verification_attempts WHERE discord_id = ? AND blocked = 1"
-  ).get(discordId);
-  return result?.count ?? 0;
+export async function getFailureCount(discordId: string): Promise<number> {
+  const [result] = await sql<[{ count: string }]>`
+    SELECT COUNT(*) as count FROM verification_attempts WHERE discord_id = ${discordId} AND blocked = 1
+  `;
+  return parseInt(result?.count ?? "0");
 }
 
-export function isRateLimited(key: string, maxAttempts: number, windowMs: number): boolean {
+export async function isRateLimited(key: string, maxAttempts: number, windowMs: number): Promise<boolean> {
   const now = Date.now();
-  const existing = db.query<{ count: number; reset_at: number }, [string]>(
-    "SELECT count, reset_at FROM rate_limits WHERE key = ?"
-  ).get(key);
+  const [existing] = await sql<[{ count: number; reset_at: string }?]>`
+    SELECT count, reset_at FROM rate_limits WHERE key = ${key}
+  `;
 
-  if (!existing || existing.reset_at < now) {
-    db.run(
-      "INSERT OR REPLACE INTO rate_limits (key, count, reset_at) VALUES (?, 1, ?)",
-      [key, now + windowMs]
-    );
+  if (!existing || parseInt(existing.reset_at) < now) {
+    await sql`
+      INSERT INTO rate_limits (key, count, reset_at)
+      VALUES (${key}, 1, ${now + windowMs})
+      ON CONFLICT(key) DO UPDATE SET count = 1, reset_at = EXCLUDED.reset_at
+    `;
     return false;
   }
 
   const newCount = existing.count + 1;
-  db.run("UPDATE rate_limits SET count = ? WHERE key = ?", [newCount, key]);
+  await sql`UPDATE rate_limits SET count = ${newCount} WHERE key = ${key}`;
   return newCount > maxAttempts;
 }
 
-export function cleanupExpiredRateLimits(): void {
-  db.run("DELETE FROM rate_limits WHERE reset_at < ?", [Date.now()]);
+export async function cleanupExpiredRateLimits(): Promise<void> {
+  await sql`DELETE FROM rate_limits WHERE reset_at < ${Date.now()}`;
+}
+
+export async function healthCheck(): Promise<{ ok: boolean; latencyMs: number }> {
+  const start = Date.now();
+  try {
+    await sql`SELECT 1`;
+    return { ok: true, latencyMs: Date.now() - start };
+  } catch {
+    return { ok: false, latencyMs: Date.now() - start };
+  }
 }

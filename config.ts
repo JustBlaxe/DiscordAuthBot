@@ -10,6 +10,7 @@ const required = [
   "ROLE_MEMBER",
   "ROLE_ADMIN",
   "VPNAPI_KEY",
+  "DATABASE_URL",
 ] as const;
 
 for (const key of required) {
@@ -39,7 +40,7 @@ export const config = {
   },
 
   database: {
-    path: process.env.DB_PATH || "authbot.db",
+    url: process.env.DATABASE_URL!,
   },
 
   server: {
@@ -52,18 +53,24 @@ export const config = {
   },
 
   verification: {
-    pullbackOnly: false,
-    checkVpn: true,
-    checkFingerprint: true,
-    checkIpDuplicate: true,
-    sessionTimeout: 5 * 60 * 1000,
+    pullbackOnly: process.env.PULLBACK_ONLY === "true",
+    checkVpn: process.env.CHECK_VPN !== "false",
+    checkFingerprint: process.env.CHECK_FINGERPRINT !== "false",
+    checkIpDuplicate: process.env.CHECK_IP_DUPLICATE !== "false",
+    sessionTimeout: parseInt(process.env.SESSION_TIMEOUT || "300000"),
   },
 
   security: {
-    minAccountAge: 7,
-    rateLimit: { maxAttempts: 5, windowMs: 60 * 1000 },
-    autoKick: { enabled: true, maxFailures: 3 },
-    blockedCountries: [] as string[], // ["RU", "CN", "IR"]
+    minAccountAge: parseInt(process.env.MIN_ACCOUNT_AGE || "7"),
+    rateLimit: {
+      maxAttempts: parseInt(process.env.RATE_LIMIT_MAX || "5"),
+      windowMs: parseInt(process.env.RATE_LIMIT_WINDOW || "60000"),
+    },
+    autoKick: {
+      enabled: process.env.AUTO_KICK !== "false",
+      maxFailures: parseInt(process.env.AUTO_KICK_MAX_FAILURES || "3"),
+    },
+    blockedCountries: process.env.BLOCKED_COUNTRIES?.split(",").filter(Boolean) || [],
   },
 
   embed: {

@@ -16,6 +16,7 @@ A Discord verification bot with anti-alt detection, VPN blocking, and device fin
 ## Requirements
 
 - [Bun](https://bun.sh) runtime
+- PostgreSQL 17
 - Discord Bot
 - VPNAPI.io API key (free tier: 1000 requests/day)
 
@@ -54,21 +55,22 @@ A Discord verification bot with anti-alt detection, VPN blocking, and device fin
 
 ## Configuration
 
-| Variable                | Description                          |
-| ----------------------- | ------------------------------------ |
-| `DISCORD_TOKEN`         | Bot token                            |
-| `DISCORD_CLIENT_ID`     | OAuth2 client ID                     |
-| `DISCORD_CLIENT_SECRET` | OAuth2 client secret                 |
-| `GUILD_ID`              | Server ID                            |
-| `REDIRECT_URI`          | OAuth2 callback URL (HTTPS in prod)  |
-| `CHANNEL_VERIFY`        | Verification channel ID              |
-| `CHANNEL_LOGS`          | Logs channel ID                      |
-| `ROLE_MEMBER`           | Verified member role ID              |
-| `ROLE_ADMIN`            | Admin role ID (for commands)         |
-| `ENCRYPTION_KEY`        | 32-byte hex key for token encryption |
-| `VPNAPI_KEY`            | VPNAPI.io API key                    |
-| `TRUST_PROXY`           | Set `true` if behind reverse proxy   |
-| `CORS_ORIGIN`           | Override CORS origin (optional)      |
+| Variable                | Description                              |
+| ----------------------- | ---------------------------------------- |
+| `DISCORD_TOKEN`         | Bot token                                |
+| `DISCORD_CLIENT_ID`     | OAuth2 client ID                         |
+| `DISCORD_CLIENT_SECRET` | OAuth2 client secret                     |
+| `GUILD_ID`              | Server ID                                |
+| `REDIRECT_URI`          | OAuth2 callback URL (HTTPS in prod)      |
+| `CHANNEL_VERIFY`        | Verification channel ID                  |
+| `CHANNEL_LOGS`          | Logs channel ID                          |
+| `ROLE_MEMBER`           | Verified member role ID                  |
+| `ROLE_ADMIN`            | Admin role ID (for commands)             |
+| `DATABASE_URL`          | PostgreSQL connection string             |
+| `ENCRYPTION_KEY`        | 32-byte hex key for token encryption     |
+| `VPNAPI_KEY`            | VPNAPI.io API key                        |
+| `TRUST_PROXY`           | Set `true` if behind reverse proxy       |
+| `CORS_ORIGIN`           | Override CORS origin (optional)          |
 
 ## Commands
 
