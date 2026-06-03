@@ -1,22 +1,51 @@
-import { EmbedBuilder, ColorResolvable } from "discord.js";
+import {
+  ContainerBuilder,
+  TextDisplayBuilder,
+  SeparatorBuilder,
+  MediaGalleryBuilder,
+  MediaGalleryItemBuilder,
+} from "discord.js";
 import { config } from "../../config";
 
-interface EmbedOptions {
+interface ContainerOptions {
   title?: string;
   description?: string;
   fields?: { name: string; value: string; inline?: boolean }[];
   image?: string;
   footer?: string;
+  color?: number;
 }
 
-export function createEmbed(options: EmbedOptions): EmbedBuilder {
-  const embed = new EmbedBuilder().setColor(config.theme.color as ColorResolvable);
+/**
+ * Builds a Components V2 Container that replaces the legacy embed layout.
+ * Messages using the returned container must be sent with the
+ * MessageFlags.IsComponentsV2 flag (content/embeds are disabled).
+ */
+export function createContainer(options: ContainerOptions): ContainerBuilder {
+  const container = new ContainerBuilder().setAccentColor(options.color ?? config.theme.color);
 
-  if (options.title) embed.setTitle(options.title);
-  if (options.description) embed.setDescription(options.description);
-  if (options.fields) embed.addFields(options.fields);
-  if (options.image) embed.setImage(options.image);
-  if (options.footer) embed.setFooter({ text: options.footer });
+  const header: string[] = [];
+  if (options.title) header.push(`## ${options.title}`);
+  if (options.description) header.push(options.description);
+  if (header.length) {
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(header.join("\n\n")));
+  }
 
-  return embed;
+  if (options.fields?.length) {
+    const fieldText = options.fields.map((f) => `**${f.name}**\n${f.value}`).join("\n\n");
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(fieldText));
+  }
+
+  if (options.image) {
+    container.addMediaGalleryComponents(
+      new MediaGalleryBuilder().addItems(new MediaGalleryItemBuilder().setURL(options.image))
+    );
+  }
+
+  if (options.footer) {
+    container.addSeparatorComponents(new SeparatorBuilder());
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# ${options.footer}`));
+  }
+
+  return container;
 }

@@ -1,6 +1,6 @@
-import { Client, TextChannel, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
+import { Client, TextChannel, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } from "discord.js";
 import { config } from "../../config";
-import { log, createEmbed, getOAuthUrl } from "../utils";
+import { log, createContainer, getOAuthUrl } from "../utils";
 
 export async function setupVerification(client: Client) {
   const channel = (await client.channels.fetch(config.channels.verify)) as TextChannel;
@@ -12,20 +12,22 @@ export async function setupVerification(client: Client) {
   const messages = await channel.messages.fetch({ limit: 10 });
   const botMessage = messages.find((m) => m.author.id === client.user?.id && !m.system);
 
-  const embed = createEmbed({
+  const container = createContainer({
     title: config.embed.title,
     description: config.embed.description,
     image: config.theme.banner || undefined,
   });
 
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setLabel(config.embed.buttonLabel).setStyle(ButtonStyle.Link).setURL(getOAuthUrl())
+  container.addActionRowComponents(
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setLabel(config.embed.buttonLabel).setStyle(ButtonStyle.Link).setURL(getOAuthUrl())
+    )
   );
 
   if (botMessage) {
-    await botMessage.edit({ embeds: [embed], components: [row] });
+    await botMessage.edit({ components: [container], flags: MessageFlags.IsComponentsV2 });
   } else {
-    await channel.send({ embeds: [embed], components: [row] });
+    await channel.send({ components: [container], flags: MessageFlags.IsComponentsV2 });
   }
 
   log.ok("Verification message ready");

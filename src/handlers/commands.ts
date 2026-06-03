@@ -2,7 +2,7 @@ import { ChatInputCommandInteraction, SlashCommandBuilder, GuildMember, MessageF
 import { config } from "../../config";
 import { findUserById, getAllVerifiedUsers, getStats, getDailyStats, getRecentAttempts, addToBlacklist, removeFromBlacklist, getBlacklist } from "../utils/database";
 import { addGuildMember } from "../utils/oauth";
-import { createEmbed } from "../utils/embed";
+import { createContainer } from "../utils/embed";
 import { log } from "../utils/logger";
 import { createStatsGraph, createPullbackGraph } from "../utils/graph";
 import { isValidIp, isValidDiscordId } from "../utils/validation";
@@ -54,7 +54,7 @@ function isAdmin(member: GuildMember): boolean {
 }
 
 async function handleHelp(interaction: ChatInputCommandInteraction) {
-  const embed = createEmbed({
+  const container = createContainer({
     title: "Available Commands",
     fields: [
       { name: "/help", value: "View all available commands", inline: false },
@@ -68,7 +68,7 @@ async function handleHelp(interaction: ChatInputCommandInteraction) {
     ],
   });
 
-  await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  await interaction.reply({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
 }
 
 export async function handleCommand(interaction: ChatInputCommandInteraction) {
@@ -110,7 +110,7 @@ export async function handleCommand(interaction: ChatInputCommandInteraction) {
     log.error(`Command ${interaction.commandName} failed: ${err instanceof Error ? err.message : "unknown error"}`);
     const content = "An error occurred while processing this command";
     if (interaction.replied || interaction.deferred) {
-      await interaction.followUp({ content, ephemeral: true });
+      await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
     } else {
       await interaction.reply({ content, flags: MessageFlags.Ephemeral });
     }
@@ -126,7 +126,7 @@ async function handleCheck(interaction: ChatInputCommandInteraction) {
     return;
   }
 
-  const embed = createEmbed({
+  const container = createContainer({
     title: `User: ${user.username}`,
     fields: [
       { name: "Verified", value: data.verified ? "Yes" : "No", inline: true },
@@ -137,7 +137,7 @@ async function handleCheck(interaction: ChatInputCommandInteraction) {
     ],
   });
 
-  await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  await interaction.reply({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
 }
 
 async function handleStats(interaction: ChatInputCommandInteraction) {
@@ -147,7 +147,7 @@ async function handleStats(interaction: ChatInputCommandInteraction) {
   const graphBuffer = createStatsGraph(daily);
   const attachment = new AttachmentBuilder(graphBuffer, { name: "stats.png" });
 
-  const embed = createEmbed({
+  const container = createContainer({
     title: "Verification Statistics",
     fields: [
       { name: "Verified Users", value: String(stats.verified), inline: true },
@@ -155,14 +155,14 @@ async function handleStats(interaction: ChatInputCommandInteraction) {
       { name: "Blocked", value: String(stats.blocked), inline: true },
       { name: "VPN Detected", value: String(stats.vpn), inline: true },
     ],
+    image: "attachment://stats.png",
   });
-  embed.setImage("attachment://stats.png");
 
-  await interaction.reply({ embeds: [embed], files: [attachment], flags: MessageFlags.Ephemeral });
+  await interaction.reply({ components: [container], files: [attachment], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
 }
 
 async function handlePullback(interaction: ChatInputCommandInteraction) {
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await interaction.deferReply({ flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
 
   const users = await getAllVerifiedUsers();
   const guild = interaction.guild;
@@ -198,17 +198,17 @@ async function handlePullback(interaction: ChatInputCommandInteraction) {
   const graphBuffer = createPullbackGraph(added, failed);
   const attachment = new AttachmentBuilder(graphBuffer, { name: "pullback.png" });
 
-  const embed = createEmbed({
+  const container = createContainer({
     title: "Pullback Complete",
     fields: [
       { name: "Added", value: String(added), inline: true },
       { name: "Failed", value: String(failed), inline: true },
       { name: "Total Processed", value: String(added + failed), inline: true },
     ],
+    image: "attachment://pullback.png",
   });
-  embed.setImage("attachment://pullback.png");
 
-  await interaction.editReply({ embeds: [embed], files: [attachment] });
+  await interaction.editReply({ components: [container], files: [attachment] });
 }
 
 async function handleAudit(interaction: ChatInputCommandInteraction) {
@@ -226,12 +226,12 @@ async function handleAudit(interaction: ChatInputCommandInteraction) {
     return `${status} **${a.discord_username}** - ${a.ip_address}\n└ ${a.block_reason || "Verified"} • ${time}`;
   });
 
-  const embed = createEmbed({
+  const container = createContainer({
     title: "Recent Verification Attempts",
     description: lines.join("\n\n"),
   });
 
-  await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  await interaction.reply({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
 }
 
 async function handleBlacklist(interaction: ChatInputCommandInteraction) {
@@ -278,11 +278,11 @@ async function handleBlacklist(interaction: ChatInputCommandInteraction) {
 
     const lines = list.map((e) => `**${e.type}:** \`${e.value}\`\n└ ${e.reason}`);
 
-    const embed = createEmbed({
+    const container = createContainer({
       title: "Blacklist",
       description: lines.join("\n\n"),
     });
 
-    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    await interaction.reply({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
   }
 }

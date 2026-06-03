@@ -1,6 +1,6 @@
-import { Client, TextChannel } from "discord.js";
+import { Client, TextChannel, MessageFlags } from "discord.js";
 import { config } from "../../config";
-import { createEmbed } from "./embed";
+import { createContainer } from "./embed";
 import { log } from "./logger";
 
 let client: Client | null = null;
@@ -14,16 +14,16 @@ export async function sendDMWarning(userId: string, failures: number, maxFailure
 
   try {
     const user = await client.users.fetch(userId);
-    const embed = createEmbed({
+    const container = createContainer({
       title: "Verification Warning",
       fields: [
         { name: "Failed Attempts", value: `${failures}/${maxFailures}`, inline: true },
         { name: "Warning", value: `You have ${maxFailures - failures} attempt(s) remaining before automatic removal from the server.`, inline: false },
       ],
+      color: config.theme.error,
     });
-    embed.setColor(config.theme.error);
 
-    await user.send({ embeds: [embed] });
+    await user.send({ components: [container], flags: MessageFlags.IsComponentsV2 });
     return true;
   } catch (err) {
     log.warn(`Failed to send DM warning to ${userId}: ${err instanceof Error ? err.message : "Unknown error"}`);
@@ -42,10 +42,9 @@ async function sendLog(data: {
     const channel = (await client.channels.fetch(config.channels.logs)) as TextChannel;
     if (!channel) return;
 
-    const embed = createEmbed({ title: data.title, fields: data.fields });
-    if (data.color) embed.setColor(data.color);
+    const container = createContainer({ title: data.title, fields: data.fields, color: data.color });
 
-    await channel.send({ embeds: [embed] });
+    await channel.send({ components: [container], flags: MessageFlags.IsComponentsV2 });
   } catch (err) {
     log.warn(`Failed to send log: ${err instanceof Error ? err.message : "Unknown error"}`);
   }
